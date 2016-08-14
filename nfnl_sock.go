@@ -9,6 +9,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 var ErrShortResponse = errors.New("Got short response from netlink")
@@ -189,6 +190,36 @@ func (s *NetlinkSocket) RecvErr() error {
 	return s.recvError
 }
 
+// netlinkMessageHeaderAndData is copied directly from standard golang-1.6 sys module.
+func netlinkMessageHeaderAndData(b []byte) (*syscall.NlMsghdr, []byte, int, error) {
+	h := (*syscall.NlMsghdr)(unsafe.Pointer(&b[0]))
+	if int(h.Len) < syscall.NLMSG_HDRLEN || int(h.Len) > len(b) {
+		return nil, nil, 0, syscall.EINVAL
+	}
+	return h, b[syscall.NLMSG_HDRLEN:], nlmAlignOf(int(h.Len)), nil
+}
+
+// ParseNetlinkMessage is copied directly from standard golang-1.6 sys module.
+// We've made a correction, check boundaries before referencing slice and
+// return an appropriate error.
+func ParseNetlinkMessage(b []byte) ([]syscall.NetlinkMessage, error) {
+	var msgs []syscall.NetlinkMessage
+	for len(b) >= syscall.NLMSG_HDRLEN {
+		h, dbuf, dlen, err := netlinkMessageHeaderAndData(b)
+		if err != nil {
+			return nil, err
+		}
+		m := syscall.NetlinkMessage{Header: *h, Data: dbuf[:int(h.Len)-syscall.NLMSG_HDRLEN]}
+		msgs = append(msgs, m)
+
+		if dlen > len(b) { // XXX
+			return nil, fmt.Errorf("XXX ParseNetlinkMessage: decoded dlen %d > message len %d\n", dlen, len(b))
+		}
+		b = b[dlen:]
+	}
+	return msgs, nil
+}
+
 // receive reads from the socket, parses messages, and writes each parsed message
 // to the recvChan channel.  It will loop reading and processing messages until an
 // error occurs and then return the error.
@@ -198,7 +229,7 @@ func (s *NetlinkSocket) receive() error {
 		if err != nil {
 			return err
 		}
-		msgs, err := syscall.ParseNetlinkMessage(s.recvBuffer[:n])
+		msgs, err := ParseNetlinkMessage(s.recvBuffer[:n])
 		if err != nil {
 			return err
 		}
@@ -260,7 +291,7 @@ func (s *NetlinkSocket) parseMessageFromBytes(data []byte) *NfNlMessage {
 	if len(data) < syscall.NLMSG_HDRLEN+NFGEN_HDRLEN {
 		return nil
 	}
-	msgs, err := syscall.ParseNetlinkMessage(data)
+	msgs, err := ParseNetlinkMessage(data)
 	if err != nil {
 		s.warn("Error parsing netlink message inside error message: %v", err)
 		return nil
