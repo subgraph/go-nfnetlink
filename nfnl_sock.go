@@ -190,7 +190,9 @@ func (s *NetlinkSocket) RecvErr() error {
 }
 
 // receive reads from the socket, parses messages, and writes each parsed message
-// to the recvChan channel.  It will loop reading and processing messages until an
+// to the recvChan channel. The received buffer is aligned to NLMSG_ALIGNTO before
+// parsing.
+// It will loop reading and processing messages until an
 // error occurs and then return the error.
 func (s *NetlinkSocket) receive() error {
 	for {
@@ -198,7 +200,7 @@ func (s *NetlinkSocket) receive() error {
 		if err != nil {
 			return err
 		}
-		msgs, err := syscall.ParseNetlinkMessage(s.recvBuffer[:n])
+		msgs, err := syscall.ParseNetlinkMessage(s.recvBuffer[:nlmAlignOf(n)])
 		if err != nil {
 			return err
 		}
