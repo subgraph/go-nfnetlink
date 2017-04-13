@@ -2,6 +2,8 @@ package nfqueue
 
 import (
 	"fmt"
+	"errors"
+	"encoding/binary"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/subgraph/go-nfnetlink"
@@ -29,6 +31,7 @@ const (
 	NFQA_PACKET_HDR  = 1
 	NFQA_VERDICT_HDR = 2
 	NFQA_MARK        = 3
+	NFQA_HWADDR      = 9
 	NFQA_PAYLOAD     = 10
 
 	NF_DROP   = 0
@@ -40,6 +43,9 @@ type NFQPacket struct {
 	HwProto uint16          // hardware protocol
 	Packet  gopacket.Packet // packet data
 	q       *NFQueue        // queue instance
+	hMark	bool		// whether mark should be set
+	mark	uint32		// optional mark for verdict
+	hwAddr []byte		// (optional) hardware address
 }
 
 type NFQueue struct {
@@ -49,6 +55,7 @@ type NFQueue struct {
 	pendingErr error                    // error which occured while receiving packet messages
 	nls        *nfnetlink.NetlinkSocket // netlink socket to netfilter queue subsystem
 	debug      bool                     // set to true if debugging enabled
+	hwtrace    bool                     // set to true if hardware addresses are to be captured
 }
 
 const defaultCopySize = 0xFFFF
@@ -70,6 +77,10 @@ func (q *NFQueue) EnableDebug() {
 	}
 	q.debug = true
 
+}
+
+func (q *NFQueue) EnableHWTrace() {
+	q.hwtrace = true
 }
 
 // SetCopySize can be called before Open to set the packet capture size
@@ -156,12 +167,21 @@ func (q *NFQueue) processPacket(m *nfnetlink.NfNlMessage) error {
 		return fmt.Errorf("No NFQA_PACKET_HDR\n")
 	}
 	p := &NFQPacket{q: q}
+	p.hMark = false
 	hdr.ReadFields(&p.id, &p.HwProto)
 	payload := m.AttrByType(NFQA_PAYLOAD)
 	if payload != nil {
 		p.Packet = gopacket.NewPacket(payload.Data, layers.LayerTypeIPv4,
 			gopacket.DecodeOptions{Lazy: true, NoCopy: true})
 	}
+	if q.hwtrace {
+//		fmt.Println("XXX: Hardware tracing on")
+		hwpkt := m.AttrByType(NFQA_HWADDR)
+		if hwpkt != nil {
+			//fmt.Println("XXX: HW TRACE DATA: %v / %p", hwpkt.Data, p.hwAddr)
+			p.hwAddr = hwpkt.Data
+		}
+	}// else { fmt.Println("XXX: NO HWTRACING ON") }
 	q.packets <- p
 	return nil
 }
@@ -188,6 +208,7 @@ func (q *NFQueue) nfqRequestVerdictMark(verdict uint32, id uint32, hasMark bool,
 	nr := q.nfqNewRequest(NFQNL_MSG_VERDICT, q.queue)
 	nr.AddAttributeFields(NFQA_VERDICT_HDR, verdict, id)
 	if hasMark {
+fmt.Println("XXX: setting mark = ", mark)
 		nr.AddAttributeFields(NFQA_MARK, mark)
 	}
 	return nr
@@ -214,7 +235,29 @@ func (p *NFQPacket) Accept() error {
 	return p.verdict(NF_ACCEPT)
 }
 
+// Set an optional mark to be set with the next verdict
+func (p *NFQPacket) SetMark(mark uint32) {
+	p.mark = mark
+	p.hMark = true
+}
+
 // verdict sends a NFQNL_MSG_VERDICT message for the packet id with the verdict value v
 func (p *NFQPacket) verdict(v uint32) error {
-	return p.q.nfqRequestVerdictMark(v, p.id, false, 0).Send()
+	return p.q.nfqRequestVerdictMark(v, p.id, p.hMark, p.mark).Send()
+}
+
+func (p *NFQPacket) GetHWAddr() ([]byte, error) {
+//fmt.Printf("XXX: hwaddr address = %p\n", p.hwAddr)
+	if len(p.hwAddr) != 12 {
+//fmt.Println("XXX: length was: ", len(p.hwAddr))
+		return nil, errors.New("Hardware data was unexpected length")
+	}
+
+	addrlen := int(binary.BigEndian.Uint16(p.hwAddr[0:2]))
+
+	if len(p.hwAddr) < 4 + addrlen {
+		return nil, errors.New("Hardware address overflow")
+	}
+
+	return p.hwAddr[addrlen:addrlen+4], nil
 }
