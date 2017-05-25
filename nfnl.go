@@ -20,6 +20,8 @@ func nativeByteOrder() binary.ByteOrder {
 	}
 }
 
+const NFNETLINK_V0 = 0
+
 // Length in bytes of NfGenHdr structure
 const NFGEN_HDRLEN = 4
 
@@ -35,8 +37,7 @@ type NfNlMessage struct {
 	syscall.NlMsghdr // Netlink message header
 	NfGenHdr         // nfnetlink general header
 
-	attrs   []*NLAttr          // list of attributes
-	attrMap map[uint16]*NLAttr // mapping of attributes by type
+	attrs   *NLAttrSet
 	nls     *NetlinkSocket     // Socket this message will be transmitted on
 }
 
@@ -44,7 +45,7 @@ type NfNlMessage struct {
 func (s *NetlinkSocket) NewNfNlMsg() *NfNlMessage {
 	return &NfNlMessage{
 		nls:     s,
-		attrMap: make(map[uint16]*NLAttr),
+		attrs: NewNLAttrSet(),
 	}
 }
 
@@ -57,11 +58,7 @@ func (m *NfNlMessage) String() string {
 	bb := new(bytes.Buffer)
 	fmt.Fprintf(bb, "[L: %d T: %04x F: %04x S: %d P: %d | ", m.Len, m.Type, m.Flags, m.Seq, m.Pid)
 	fmt.Fprintf(bb, "F: %d V: %d R: %d |", m.Family, m.Version, m.ResID)
-	for _, a := range m.attrs {
-		fmt.Fprintf(bb, " %v", a)
-	}
-	fmt.Fprintf(bb, "]")
-
+	fmt.Fprintf(bb, " %v]", m.attrs)
 	return bb.String()
 }
 
@@ -73,20 +70,13 @@ func (m *NfNlMessage) Serialize() []byte {
 	bb.WriteByte(m.Family)
 	bb.WriteByte(m.Version)
 	binary.Write(bb, binary.BigEndian, m.ResID)
-
-	for _, a := range m.attrs {
-		a.WriteTo(bb)
-	}
-
+	m.attrs.WriteTo(bb)
 	return bb.Bytes()
 }
 
 // updateLen sets the header Len value to the correct value for the current content
 func (m *NfNlMessage) updateLen() {
-	m.Len = syscall.NLMSG_HDRLEN + NFGEN_HDRLEN
-	for _, a := range m.attrs {
-		m.Len += uint32(a.Size())
-	}
+	m.Len = syscall.NLMSG_HDRLEN + NFGEN_HDRLEN + uint32(m.attrs.Size())
 }
 
 // Round the length of a netlink message up to align it properly.
@@ -112,13 +102,16 @@ func (m *NfNlMessage) AddAttributeFields(atype uint16, fields ...interface{}) er
 
 // AddAttribute appends the provided NLAttr attribute to this message
 func (m *NfNlMessage) AddAttribute(attr *NLAttr) {
-	m.attrs = append(m.attrs, attr)
-	m.attrMap[attr.Type] = attr
+	m.attrs.Add(attr)
 }
 
 // AttrByType returns an attribute of the given type if this message contains one, or nil otherwise.
-func (m *NfNlMessage) AttrByType(atype uint16) *NLAttr {
-	return m.attrMap[atype]
+//func (m *NfNlMessage) AttrByType(atype uint16) *NLAttr {
+//	return m.attrs.Get(atype)
+//}
+
+func (m *NfNlMessage) Attr(atypes ...uint16) *NLAttr {
+	return m.attrs.Get(atypes...)
 }
 
 // parse reads serialized bytes from r and parses a netlink message starting at the NfGenHdr and

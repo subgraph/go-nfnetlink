@@ -26,7 +26,7 @@ const (
 )
 
 func (sf SockFlags) isSet(f SockFlags) bool {
-	return sf&f == f
+	return sf & f == f
 
 }
 
@@ -53,15 +53,17 @@ type netlinkResponse struct {
 }
 
 type NetlinkSocket struct {
-	fd          int                      // Socket file descriptor
-	peer        *syscall.SockaddrNetlink // Destination address for sendto()
-	recvChan    chan *NfNlMessage        // Channel for transmitting received messages
-	recvError   error                    // If an error interrupts reception of messages store it here
-	recvBuffer  []byte                   // Buffer for storing bytes read from socket
-	seq         uint32                   // next sequence number to use
-	flags       SockFlags
-	responseMap map[uint32]chan *netlinkResponse // maps sequence numbers to channels to deliver response message on
-	lock        sync.Mutex                       // protects responseMap and recvChan
+	fd            int                              // Socket file descriptor
+	peer          *syscall.SockaddrNetlink         // Destination address for sendto()
+	pid           uint32
+	recvChan      chan *NfNlMessage                // Channel for transmitting received messages
+	recvError     error                            // If an error interrupts reception of messages store it here
+	recvBuffer    []byte                           // Buffer for storing bytes read from socket
+	seq           uint32                           // next sequence number to use
+	subscriptions uint32
+	flags         SockFlags
+	responseMap   map[uint32]chan *netlinkResponse // maps sequence numbers to channels to deliver response message on
+	lock          sync.Mutex                       // protects responseMap and recvChan
 }
 
 // NewNetlinkSocket creates a new NetlinkSocket
@@ -76,11 +78,22 @@ func NewNetlinkSocket(bus int) (*NetlinkSocket, error) {
 		syscall.Close(fd)
 		return nil, err
 	}
+	sa, err := syscall.Getsockname(fd)
+	if err != nil {
+		syscall.Close(fd)
+		return nil, err
+	}
+	ssa, ok := sa.(*syscall.SockaddrNetlink)
+	if !ok {
+		syscall.Close(fd)
+		return nil, fmt.Errorf("Getsockname() returned %T, SockaddrNetlink expected", sa)
+	}
 
 	s := &NetlinkSocket{
 		fd:          fd,
 		flags:       FlagAckRequests,
 		peer:        &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK},
+		pid:         ssa.Pid,
 		recvBuffer:  make([]byte, recvBufferSize),
 		responseMap: make(map[uint32]chan *netlinkResponse),
 	}
@@ -88,6 +101,12 @@ func NewNetlinkSocket(bus int) (*NetlinkSocket, error) {
 	go s.runReceiveLoop()
 
 	return s, nil
+}
+
+func (s *NetlinkSocket) Subscribe(subscriptions uint32) error {
+	s.subscriptions |= subscriptions
+	lsa := &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK, Pid: s.pid, Groups: s.subscriptions}
+	return syscall.Bind(s.fd, lsa)
 }
 
 // SetFlag adds the flag f to the set of enabled flags for this socket
@@ -190,9 +209,7 @@ func (s *NetlinkSocket) RecvErr() error {
 }
 
 // receive reads from the socket, parses messages, and writes each parsed message
-// to the recvChan channel. The received buffer is aligned to NLMSG_ALIGNTO before
-// parsing.
-// It will loop reading and processing messages until an
+// to the recvChan channel.  It will loop reading and processing messages until an
 // error occurs and then return the error.
 func (s *NetlinkSocket) receive() error {
 	for {
@@ -200,7 +217,7 @@ func (s *NetlinkSocket) receive() error {
 		if err != nil {
 			return err
 		}
-		msgs, err := syscall.ParseNetlinkMessage(s.recvBuffer[:nlmAlignOf(n)])
+		msgs, err := syscall.ParseNetlinkMessage(s.recvBuffer[:n])
 		if err != nil {
 			return err
 		}
@@ -259,7 +276,7 @@ func (s *NetlinkSocket) processErrorMsg(msg syscall.NetlinkMessage) {
 }
 
 func (s *NetlinkSocket) parseMessageFromBytes(data []byte) *NfNlMessage {
-	if len(data) < syscall.NLMSG_HDRLEN+NFGEN_HDRLEN {
+	if len(data) < syscall.NLMSG_HDRLEN + NFGEN_HDRLEN {
 		return nil
 	}
 	msgs, err := syscall.ParseNetlinkMessage(data)
@@ -328,7 +345,9 @@ func readErrno(data []byte) uint32 {
 // of bytes read.  If less than NLMSG_HDRLEN bytes are read, ErrShortResponse
 // is returned as an error.
 func (s *NetlinkSocket) fillRecvBuffer() (int, error) {
-	n, _, err := syscall.Recvfrom(s.fd, s.recvBuffer, 0)
+	n, from, err := syscall.Recvfrom(s.fd, s.recvBuffer, 0)
+	sa := from.(*syscall.SockaddrNetlink)
+	fmt.Printf("from: %d\n", sa.Groups)
 	if err != nil {
 		return 0, err
 	}

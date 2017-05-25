@@ -23,8 +23,6 @@ const (
 	NFQNL_MSG_VERDICT = 1
 	NFQNL_MSG_CONFIG  = 2
 
-	NFNETLINK_V0 = 0
-
 	NFQA_CFG_COMMAND = 1
 	NFQA_CFG_PARAMS  = 2
 
@@ -162,21 +160,21 @@ func (q *NFQueue) PendingError() error {
 
 // processPacket handles an incoming NfNlMessage which is assumed to contain a received packet.
 func (q *NFQueue) processPacket(m *nfnetlink.NfNlMessage) error {
-	hdr := m.AttrByType(NFQA_PACKET_HDR)
+	hdr := m.Attr(NFQA_PACKET_HDR)
 	if hdr == nil {
 		return fmt.Errorf("No NFQA_PACKET_HDR\n")
 	}
 	p := &NFQPacket{q: q}
 	p.hMark = false
 	hdr.ReadFields(&p.id, &p.HwProto)
-	payload := m.AttrByType(NFQA_PAYLOAD)
+	payload := m.Attr(NFQA_PAYLOAD)
 	if payload != nil {
 		p.Packet = gopacket.NewPacket(payload.Data, layers.LayerTypeIPv4,
 			gopacket.DecodeOptions{Lazy: true, NoCopy: true})
 	}
 	if q.hwtrace {
 //		fmt.Println("XXX: Hardware tracing on")
-		hwpkt := m.AttrByType(NFQA_HWADDR)
+		hwpkt := m.Attr(NFQA_HWADDR)
 		if hwpkt != nil {
 			//fmt.Println("XXX: HW TRACE DATA: %v / %p", hwpkt.Data, p.hwAddr)
 			p.hwAddr = hwpkt.Data
@@ -208,7 +206,6 @@ func (q *NFQueue) nfqRequestVerdictMark(verdict uint32, id uint32, hasMark bool,
 	nr := q.nfqNewRequest(NFQNL_MSG_VERDICT, q.queue)
 	nr.AddAttributeFields(NFQA_VERDICT_HDR, verdict, id)
 	if hasMark {
-fmt.Println("XXX: setting mark = ", mark)
 		nr.AddAttributeFields(NFQA_MARK, mark)
 	}
 	return nr
@@ -220,7 +217,7 @@ func (q *NFQueue) nfqNewRequest(mtype uint8, queue uint16) *nfnetlink.NfNlMessag
 	nlm.Type = uint16((NFNL_SUBSYS_QUEUE << 8) | uint16(mtype))
 	nlm.Flags = syscall.NLM_F_REQUEST
 	nlm.Family = syscall.AF_UNSPEC
-	nlm.Version = NFNETLINK_V0
+	nlm.Version = nfnetlink.NFNETLINK_V0
 	nlm.ResID = queue
 	return nlm
 }
