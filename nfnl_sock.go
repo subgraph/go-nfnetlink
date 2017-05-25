@@ -217,7 +217,8 @@ func (s *NetlinkSocket) receive() error {
 		if err != nil {
 			return err
 		}
-		msgs, err := syscall.ParseNetlinkMessage(s.recvBuffer[:n])
+//		msgs, err := syscall.ParseNetlinkMessage(s.recvBuffer[:n])
+		msgs, err := syscall.ParseNetlinkMessage(s.recvBuffer[:nlmAlignOf(n)])
 		if err != nil {
 			return err
 		}
@@ -347,9 +348,11 @@ func readErrno(data []byte) uint32 {
 func (s *NetlinkSocket) fillRecvBuffer() (int, error) {
 	n, from, err := syscall.Recvfrom(s.fd, s.recvBuffer, 0)
 	sa := from.(*syscall.SockaddrNetlink)
-	fmt.Printf("from: %d\n", sa.Groups)
 	if err != nil {
 		return 0, err
+	}
+	if s.flags.isSet(FlagDebug) {
+		fmt.Printf("from: %d\n", sa.Groups)
 	}
 	if n < syscall.NLMSG_HDRLEN {
 		return 0, ErrShortResponse
