@@ -33,6 +33,7 @@ const (
 
 	NF_DROP   = 0
 	NF_ACCEPT = 1
+	NF_REPEAT = 4
 )
 
 type NFQPacket struct {
@@ -214,7 +215,18 @@ func (p *NFQPacket) Accept() error {
 	return p.verdict(NF_ACCEPT)
 }
 
+// Repeat sets the NF_REPEAT verdict on this packet with the given mark
+func (p *NFQPacket) Repeat(mark uint32) error {
+	return p.verdictWithMark(NF_REPEAT, mark)
+}
+
 // verdict sends a NFQNL_MSG_VERDICT message for the packet id with the verdict value v
 func (p *NFQPacket) verdict(v uint32) error {
 	return p.q.nfqRequestVerdictMark(v, p.id, false, 0).Send()
+}
+
+// verdictWithMark sends a NFQNL_MSG_VERDICT message for the packet id with the verdict value v,
+// and the NFQA_MARK attribute with the given mark.
+func (p *NFQPacket) verdictWithMark(v uint32, mark uint32) error {
+	return p.q.nfqRequestVerdictMark(v, p.id, true, mark).Send()
 }
